@@ -104,3 +104,6 @@ describe("Products API Tests", () => {
         expect(response.body.message).toBe("Product deleted successfully.");
     });
 });
+afterAll(async () => {
+    await db.end();  // Close MySQL connection
+  });
