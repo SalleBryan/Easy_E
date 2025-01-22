@@ -1,32 +1,25 @@
 name: Run Tests
 
-on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+on: [push, pull_request]
 
 jobs:
   test:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [22]
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: ${{ matrix.node-version }}
+      - name: Install Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22'  # Use the appropriate Node.js version
 
-    - name: Install dependencies
-      run: npm install
+      - name: Install dependencies
+        run: npm ci  # Ensures clean install using package-lock.json
 
-    - name: Run backend tests
-      run: npm test
+      - name: Grant execute permissions to Jest
+        run: chmod +x node_modules/.bin/jest  # Fix permission issue
+
+      - name: Run tests
+        run: npm test
