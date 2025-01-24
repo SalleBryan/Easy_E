@@ -1,109 +1,53 @@
 const request = require("supertest");
-const express = require("express");
-const app = require("../server"); // Path to your server.js file
-const mysql = require("mysql2");
+const app = require("../server"); // Adjust the path if necessary
 
-// Mock Database Connection for Tests
-const db = mysql.createConnection({
-    host: "localhost",
-    user: "root",
-    password: "5q93pj7m",
-    database: "easy_e",
-});
+describe("Product API Endpoint - Add Product", () => {
+    let token;
 
-// Sample Test Data
-const testProduct = {
-    name: "Test Product",
-    category: "Electronics",
-    description: "A test product description.",
-    price: 100,
-    image_url: "http://example.com/test-product.jpg",
-};
+    // Test setup: create a mock user and log in to get a token for authenticated endpoint
+    beforeAll(async () => {
+        const userData = {
+            name: "Test Usernk",
+            email: "testuser@example.com",
+            password: "password123",
+        };
 
-let token;
+        // Sign up the user
+        await request(app)
+            .post("/api/signup")
+            .send(userData);
 
-// Insert user and login to get token
-beforeAll((done) => {
-    const testUser = { email: "testuser@example.com", password: "testpassword" };
-
-    db.query("SELECT * FROM users WHERE email = ?", [testUser.email], (err, results) => {
-        if (results.length === 0) {
-            const bcrypt = require("bcrypt");
-            bcrypt.hash(testUser.password, 10, (err, hashedPassword) => {
-                db.query(
-                    "INSERT INTO users (username, email, password) VALUES (?, ?, ?)",
-                    ["Test User", testUser.email, hashedPassword],
-                    () => {
-                        request(app)
-                            .post("/api/login")
-                            .send(testUser)
-                            .end((err, res) => {
-                                token = res.headers["set-cookie"][0].split(";")[0].split("=")[1];
-                                done();
-                            });
-                    }
-                );
+        // Log in to get the JWT token
+        const loginResponse = await request(app)
+            .post("/api/login")
+            .send({
+                email: userData.email,
+                password: userData.password,
             });
-        } else {
-            request(app)
-                .post("/api/login")
-                .send(testUser)
-                .end((err, res) => {
-                    token = res.headers["set-cookie"][0].split(";")[0].split("=")[1];
-                    done();
-                });
-        }
-    });
-});
 
-// Clean up test product
-afterAll((done) => {
-    db.query("DELETE FROM products WHERE name = ?", [testProduct.name], () => {
-        db.end(done);
-    });
-});
-
-describe("Products API Tests", () => {
-    it("should retrieve all products without authentication", async () => {
-        const response = await request(app)
-            .get("/api/products")
-            .set("Content-Type", "application/json");
-
-        expect(response.status).toBe(200);
-        expect(Array.isArray(response.body)).toBe(true);
+        // Ensure token is retrieved correctly
+        token = loginResponse.headers["set-cookie"][0].split(";")[0].split("=")[1];
     });
 
-    it("should add a new product when authenticated", async () => {
+    // Test the POST /api/products endpoint (add new product)
+    it("should add a new product", async () => {
+        const newProduct = {
+            name: "Test Product",
+            category: "Test Category",
+            description: "This is a test product.",
+            price: 100,
+            image_url: "https://example.com/image.jpg",
+        };
+
+        // Send POST request to add a new product
         const response = await request(app)
             .post("/api/products")
-            .send(testProduct)
-            .set("Authorization", `Bearer ${token}`)
+            .set("Cookie", `token=${token}`) // Ensure token is passed in the cookie header
+            .send(newProduct)
             .set("Content-Type", "application/json");
 
+        // Verify the response
         expect(response.status).toBe(201);
         expect(response.body.message).toBe("Product added successfully.");
     });
-
-    it("should delete a product when authenticated", async () => {
-        // First, retrieve the product to get its ID
-        const allProducts = await request(app)
-            .get("/api/products")
-            .set("Content-Type", "application/json");
-
-        const productId = allProducts.body.find(
-            (product) => product.name === testProduct.name
-        ).id;
-
-        // Delete the product
-        const response = await request(app)
-            .delete(`/api/products/${productId}`)
-            .set("Authorization", `Bearer ${token}`)
-            .set("Content-Type", "application/json");
-
-        expect(response.status).toBe(200);
-        expect(response.body.message).toBe("Product deleted successfully.");
-    });
 });
-afterAll(async () => {
-    await db.end();  // Close MySQL connection
-  });

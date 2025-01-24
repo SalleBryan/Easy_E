@@ -1,8 +1,10 @@
 const express = require("express");
 const bodyParser = require("body-parser");
-const mysql = require("mysql2");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const cookieParser = require("cookie-parser");
+const path = require("path");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 const port = 3000;
@@ -10,38 +12,22 @@ const port = 3000;
 // Middleware
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(express.static("public")); // Serve static files (HTML, CSS, JS)
+app.use(cookieParser());
+app.use(express.static(path.join(__dirname, "public"))); // Serve static files
 
-// MySQL Connection
-const db = mysql.createConnection({
-    host: "localhost",
-    user: "root",
-    password: "5q93pj7m",
-    database: "easy_e",
+// Environment Variables
+require("dotenv").config();
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// Supabase Client
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Routes
+app.get("/", (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "index.html")); // Serve the homepage
 });
-
-db.connect((err) => {
-    if (err) {
-        console.error("Database connection failed:", err.message);
-        return;
-    }
-    console.log("Connected to MySQL database.");
-});
-
-// JWT Secret
-const JWT_SECRET = "5q93pj7m";
-
-// API Routes (Signup, Login, Products) - Include all the code you already have
-
-// Only start the server when running directly (not in tests)
-/*if (require.main === module) {
-    app.listen(port, () => {
-        console.log(`Server is running on http://localhost:${port}`);
-    });
-}
-*/
-// Export the app for tests
-module.exports = app;
 
 // Signup API
 app.post("/api/signup", async (req, res) => {
@@ -52,31 +38,33 @@ app.post("/api/signup", async (req, res) => {
     }
 
     try {
-        db.query("SELECT * FROM users WHERE email = ?", [email], async (err, results) => {
-            if (err) {
-                console.error(err);
-                return res.status(500).json({ error: "Internal server error." });
-            }
+        const { data: existingUser } = await supabase
+            .from("users")
+            .select("*")
+            .eq("email", email)
+            .single();
 
-            if (results.length > 0) {
-                return res.status(400).json({ error: "Email is already registered." });
-            }
+        if (existingUser) {
+            return res.status(400).json({ error: "Email is already registered." });
+        }
 
-            const hashedPassword = await bcrypt.hash(password, 10);
+        const hashedPassword = await bcrypt.hash(password, 10);
 
-            db.query(
-                "INSERT INTO users (username, email, password) VALUES (?, ?, ?)",
-                [name, email, hashedPassword],
-                (err) => {
-                    if (err) {
-                        console.error(err);
-                        return res.status(500).json({ error: "Failed to register user." });
-                    }
-                    // Redirect to index page after successful signup
-                    res.status(201).redirect("/");
-                }
-            );
-        });
+        const { error } = await supabase.from("users").insert([
+            {
+                username: name,
+                email: email,
+                password: hashedPassword,
+            },
+        ]);
+
+        if (error) {
+            console.error("Error inserting user:", error);
+            return res.status(500).json({ error: "Failed to register user." });
+        }
+
+        // Redirect to the homepage after successful signup
+        res.redirect("/");
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: "Internal server error." });
@@ -84,24 +72,23 @@ app.post("/api/signup", async (req, res) => {
 });
 
 // Login API
-app.post("/api/login", (req, res) => {
+app.post("/api/login", async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
         return res.status(400).json({ error: "All fields are required." });
     }
 
-    db.query("SELECT * FROM users WHERE email = ?", [email], async (err, results) => {
-        if (err) {
-            console.error(err);
-            return res.status(500).json({ error: "Internal server error." });
-        }
+    try {
+        const { data: user } = await supabase
+            .from("users")
+            .select("*")
+            .eq("email", email)
+            .single();
 
-        if (results.length === 0) {
+        if (!user) {
             return res.status(401).json({ error: "Invalid email or password." });
         }
-
-        const user = results[0];
 
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
@@ -110,21 +97,27 @@ app.post("/api/login", (req, res) => {
 
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: "1h" });
 
-        // Redirect to index page after successful login
-        res.status(200).cookie("token", token, { httpOnly: true }).redirect("/");
-    });
+        // Set token in a cookie
+        res.cookie("token", token, { httpOnly: true });
+
+        // Redirect to the homepage after successful login
+        res.redirect("/");
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Internal server error." });
+    }
 });
 
 // Middleware to Authenticate Users via JWT
 const authenticate = (req, res, next) => {
-    const token = req.headers.authorization;
+    const token = req.cookies.token;
 
     if (!token) {
         return res.status(401).json({ error: "Access denied. No token provided." });
     }
 
     try {
-        const decoded = jwt.verify(token.split(" ")[1], JWT_SECRET);
+        const decoded = jwt.verify(token, JWT_SECRET);
         req.user = decoded;
         next();
     } catch (err) {
@@ -133,52 +126,81 @@ const authenticate = (req, res, next) => {
 };
 
 // API to Get All Products
-app.get("/api/products", (req, res) => {
-  db.query("SELECT * FROM products", (err, results) => {
-      if (err) {
-          console.error(err);
-          return res.status(500).json({ error: "Failed to retrieve products." });
-      }
-      res.status(200).json(results);
-  });
+app.get("/api/products", async (req, res) => {
+    try {
+        const { data: products, error } = await supabase.from("products").select("*");
+
+        if (error) {
+            console.error("Error fetching products:", error);
+            return res.status(500).json({ error: "Failed to retrieve products." });
+        }
+
+        res.status(200).json(products);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Internal server error." });
+    }
 });
 
-
 // API to Add a New Product
-app.post("/api/products", authenticate, (req, res) => {
-  const { name, category, description, price, image_url } = req.body;
+app.post("/api/products", authenticate, async (req, res) => {
+    const { name, category, description, price, image_url } = req.body;
 
-  if (!name || !category || !description || !price || !image_url) {
-      return res.status(400).json({ error: "All fields are required." });
-  }
+    if (!name || !category || !description || !price || !image_url) {
+        return res.status(400).json({ error: "All fields are required." });
+    }
 
-  db.query(
-      "INSERT INTO products (name, category, description, price, image_url) VALUES (?, ?, ?, ?, ?)",
-      [name, category, description, price, image_url],
-      (err) => {
-          if (err) {
-              console.error(err);
-              return res.status(500).json({ error: "Failed to add product." });
-          }
-          res.status(201).json({ message: "Product added successfully." });
-      }
-  );
+    try {
+        const { error } = await supabase.from("products").insert([
+            {
+                name,
+                category,
+                description,
+                price,
+                image_url,
+            },
+        ]);
+
+        if (error) {
+            console.error("Error adding product:", error);
+            return res.status(500).json({ error: "Failed to add product." });
+        }
+
+        res.status(201).json({ message: "Product added successfully." });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Internal server error." });
+    }
 });
 
 // API to Delete a Product
-app.delete("/api/products/:id", authenticate, (req, res) => {
+app.delete("/api/products/:id", authenticate, async (req, res) => {
     const productId = req.params.id;
 
-    db.query("DELETE FROM products WHERE id = ?", [productId], (err) => {
-        if (err) {
-            console.error(err);
+    try {
+        const { error } = await supabase.from("products").delete().eq("id", productId);
+
+        if (error) {
+            console.error("Error deleting product:", error);
             return res.status(500).json({ error: "Failed to delete product." });
         }
+
         res.status(200).json({ message: "Product deleted successfully." });
-    });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Internal server error." });
+    }
 });
 
 // Start the Server
-app.listen(port, () => {
-    console.log(`Server is running on http://localhost:${port}`);
-});
+//app.listen(port, () => {
+ //   console.log(`Server is running on http://localhost:${port}`);
+//});
+
+if (require.main === module) {
+    app.listen(port, () => {
+        console.log(`Server is running on http://localhost:${port}`);
+    });
+}
+
+module.exports = app;
